@@ -3,9 +3,10 @@ import * as msal from '@azure/msal-node';
 import axios from 'axios';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { orgList } from './data/orgDummyData';
-import { empList } from './data/empDummyData';
+
 import { jwtDecode } from 'jwt-decode';
+import { initDB, execute } from './utils/db';
+import { GET_ORG_CHART_EMPLOYEES, GET_ORG_CHART_DEPARTMENTS } from './queries/orgChart';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -14,11 +15,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // 미들웨어 설정
-app.use(cors({
-    origin: true,       // 모든 도메인 허용 (나중엔 특정 도메인으로 변경해야함)
-    credentials: true,  // 인증 정보 포함 허용
-    maxAge: 3600        // 핵심: "3600초(1시간) 동안은 Preflight 안하도록 설정"
-}));
+app.use(cors()); // CORS 허용 (프로덕션 환경에서는 특정 도메인만 허용하도록 수정 필요)
 app.use(express.json()); // JSON 요청 본문 파싱
 
 // 요청 로깅 미들웨어
@@ -88,15 +85,23 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
             return res.status(401).send('유효하지 않은 토큰입니다.');
         }
 
-        // 인증 성공 시 조직도 데이터 반환
+        // 병렬 실행으로 성능 최적화 (쿼리는 queries/orgChart.ts 에서 가져옴)
+        const [empResult, orgResult] = await Promise.all([
+            execute(GET_ORG_CHART_EMPLOYEES),
+            execute(GET_ORG_CHART_DEPARTMENTS)
+        ]);
+
+        const dbEmpList = empResult.rows;
+        const dbOrgList = orgResult.rows;
+
         res.json({
-            orgList,
-            empList
+            orgList: dbOrgList,
+            empList: dbEmpList
         });
 
     } catch (error) {
-        console.error("Token validation failed:", error);
-        res.status(401).send('인증에 실패했습니다.');
+        console.error("Token validation or DB query failed:", error);
+        res.status(401).send('인증 또는 데이터 조회에 실패했습니다.');
     }
 });
 
@@ -312,6 +317,14 @@ app.get('/api/user/:id/photo', async (req: Request, res: Response): Promise<any>
 });
 
 // 서버 시작
-app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
-});
+(async () => {
+    try {
+        await initDB(); // DB 연결 초기화
+        app.listen(port, () => {
+            console.log(`Server running at http://localhost:${port}`);
+        });
+    } catch (err) {
+        console.error('Failed to start server due to DB connection error:', err);
+        process.exit(1); // DB 연결 실패 시 서버 시작하지 않고 종료
+    }
+})();
