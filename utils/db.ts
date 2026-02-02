@@ -44,7 +44,9 @@ export const execute = async (sql: string, binds: any[] = [], options: oracledb.
     let connection;
 
     try {
+        console.log(`[DB] 커넥션 요청 중... (Pool Status: Open=${pool.getStatistics().connectionsOpen}, Busy=${pool.getStatistics().connectionsInUse})`);
         connection = await pool.getConnection();
+        console.log(`[DB] 커넥션 획득 성공.`);
 
         const defaultOptions: oracledb.ExecuteOptions = {
             outFormat: oracledb.OUT_FORMAT_OBJECT, // 결과 컬럼명을 키로 하는 객체 반환
@@ -52,7 +54,9 @@ export const execute = async (sql: string, binds: any[] = [], options: oracledb.
             ...options
         };
 
+        console.log(`[DB] 쿼리 실행 시작: ${sql.substring(0, 50)}...`);
         const result = await connection.execute(sql, binds, defaultOptions);
+        console.log(`[DB] 쿼리 실행 완료.`);
         return result;
 
     } catch (err) {
@@ -62,6 +66,7 @@ export const execute = async (sql: string, binds: any[] = [], options: oracledb.
         if (connection) {
             try {
                 await connection.close();
+                console.log(`[DB] 커넥션 반납 완료.`);
             } catch (closeErr) {
                 console.error('커넥션 반납 중 오류:', closeErr);
             }

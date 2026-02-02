@@ -19,6 +19,22 @@ const port = process.env.PORT || 3000;
 app.use(cors()); // CORS 허용 (프로덕션 환경에서는 특정 도메인만 허용하도록 수정 필요)
 app.use(express.json()); // JSON 요청 본문 파싱
 
+// 요청 시작/종료 로깅 미들웨어
+app.use((req, res, next) => {
+    const start = Date.now();
+    const requestId = Math.random().toString(36).substring(7); // 간단한 요청 ID 생성
+    console.log(`[REQ-START][${requestId}] ${req.method} ${req.url}`);
+
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        console.log(`[REQ-END][${requestId}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
+    });
+
+    // req 객체에 id 심어서 다른 곳에서도 쓸 수 있게 (필요시)
+    (req as any).requestId = requestId;
+    next();
+});
+
 // 요청 로깅 미들웨어
 app.use((req: Request, res: Response, next) => {
     const now = new Date().toISOString();
@@ -65,6 +81,7 @@ app.get('/api/me', async (req: Request, res: Response): Promise<any> => {
 
 // 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
 app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> => {
+    const requestId = (req as any).requestId;
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
@@ -88,11 +105,15 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         }
 
         // * 검증 이후 조직도 데이터 가져오기 *
+        console.log(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 병렬 수행)...`);
+
         // 병렬 실행으로 성능 최적화 (쿼리는 queries/orgChart.ts 에서 가져옴)
         const [empResult, orgResult] = await Promise.all([
             execute(GET_ORG_CHART_EMPLOYEES),
             execute(GET_ORG_CHART_DEPARTMENTS)
         ]);
+
+        console.log(`[${requestId}] DB 데이터 조회 완료.`);
 
         // DB에서 조회한 결과를 TypeScript 인터페이스(EmpData, OrgData)로 타입 단언(Type Assertion)하여 사용
         // 이렇게 하면 이후 코드에서 자동완성 및 타입 체크의 도움을 받을 수 있습니다.
@@ -124,6 +145,8 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
 // flow설명 3. uuid로 presence 조회
 // flow설명 4. 결과를 email로 매칭한 객체로 반환
 app.post('/api/users/presence', async (req: Request, res: Response): Promise<any> => {
+    const requestId = (req as any).requestId;
+    console.log(`[${requestId}] Presence Batch Request Started.`);
     const authHeader = req.headers.authorization;
     const { ids } = req.body;
 
@@ -144,7 +167,9 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
     };
 
     try {
+        console.log(`[${requestId}] Presence OBO Token 요청...`);
         const response = await cca.acquireTokenOnBehalfOf(oboRequest); // AccessToken 획득
+        console.log(`[${requestId}] Presence OBO Token 획득 성공.`);
         if (!response || !response.accessToken) {
             return res.status(401).send('유효하지 않은 토큰입니다.');
         }
@@ -155,6 +180,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
 
         // ID 목록을 15개씩 청크로 나누어 처리
         for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+            console.log(`[${requestId}] Chunk Processing [${i} - ${i + BATCH_SIZE}]`);
             const chunkIds = ids.slice(i, i + BATCH_SIZE);
 
             try {
@@ -172,12 +198,14 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                     const filterClause = emailIds.map((email: string) => `userPrincipalName eq '${email}'`).join(' or ');
 
                     try {
+                        console.log(`[${requestId}] Graph API User Lookup Request (Email -> UUID)...`);
                         const userLookupResponse = await axios.get(
                             `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
                             {
                                 headers: { Authorization: `Bearer ${accessToken}` }
                             }
                         );
+                        console.log(`[${requestId}] Graph API User Lookup Response Received.`);
 
                         const foundUsers = userLookupResponse.data.value;
                         const foundIds = foundUsers.map((u: any) => {
@@ -197,6 +225,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                 }
 
                 // 3. 확보된 UUID로 Presence 조회
+                console.log(`[${requestId}] Graph API Presence Request...`);
                 const graphResponse = await axios.post(
                     `https://graph.microsoft.com/v1.0/communications/getPresencesByUserId`,
                     { ids: resolvedUuids },
@@ -207,6 +236,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                         }
                     }
                 );
+                console.log(`[${requestId}] Graph API Presence Response Received.`);
 
                 // 4. 응답 데이터 포맷팅 (이메일 포함) 및 결과 수집
                 const presenceList = graphResponse.data.value;
