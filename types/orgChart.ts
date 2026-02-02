@@ -11,10 +11,10 @@ export interface OrgData {
 export interface EmpData {
     empId: string;
     empNm: string;
-    jobTitleDesc: string;
     jobTitileCd: string;
-    posisionDesc: string;
+    jobTitleDesc: string;
     posisionCd: string;
+    posisionDesc: string;
     compCd: string;
     orgId: string;
     orgNm: string;
