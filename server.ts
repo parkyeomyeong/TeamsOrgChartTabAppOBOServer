@@ -105,13 +105,14 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         }
 
         // * 검증 이후 조직도 데이터 가져오기 *
-        console.log(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 병렬 수행)...`);
+        console.log(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 순차 수행)...`);
 
-        // 병렬 실행으로 성능 최적화 (쿼리는 queries/orgChart.ts 에서 가져옴)
-        const [empResult, orgResult] = await Promise.all([
-            execute(GET_ORG_CHART_EMPLOYEES),
-            execute(GET_ORG_CHART_DEPARTMENTS)
-        ]);
+        // [중요] 병렬 실행(Promise.all)은 커넥션을 동시에 2개를 점유하므로, 
+        // 동시 접속자가 몰리면 커넥션 풀(Max 10)이 금방 고갈되어 서버가 멈출 수 있습니다.
+        // 안정성을 위해 하나씩 실행하고 반납하도록 순차 실행으로 변경합니다.
+
+        const empResult = await execute(GET_ORG_CHART_EMPLOYEES);
+        const orgResult = await execute(GET_ORG_CHART_DEPARTMENTS);
 
         console.log(`[${requestId}] DB 데이터 조회 완료.`);
 
@@ -202,7 +203,8 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                         const userLookupResponse = await axios.get(
                             `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
                             {
-                                headers: { Authorization: `Bearer ${accessToken}` }
+                                headers: { Authorization: `Bearer ${accessToken}` },
+                                timeout: 5000 // 5초 타임아웃 설정 (무한 대기 방지)
                             }
                         );
                         console.log(`[${requestId}] Graph API User Lookup Response Received.`);
@@ -233,7 +235,8 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                         headers: {
                             Authorization: `Bearer ${accessToken}`,
                             "Content-Type": "application/json"
-                        }
+                        },
+                        timeout: 5000 // 5초 타임아웃 설정
                     }
                 );
                 console.log(`[${requestId}] Graph API Presence Response Received.`);
@@ -340,7 +343,8 @@ app.get('/api/user/:id/photo', async (req: Request, res: Response): Promise<any>
                 headers: {
                     Authorization: `Bearer ${response.accessToken}`
                 },
-                responseType: 'arraybuffer' // 중요: 이미지는 바이너리로 받아야 함
+                responseType: 'arraybuffer', // 중요: 이미지는 바이너리로 받아야 함
+                timeout: 5000 // 5초 타임아웃 설정
             }
         );
 
