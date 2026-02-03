@@ -3,6 +3,7 @@ import * as msal from '@azure/msal-node';
 import axios from 'axios';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import https from 'https';
 
 import { jwtDecode } from 'jwt-decode';
 import { initDB, execute } from './utils/db';
@@ -14,6 +15,17 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// [중요] Axios용 HTTPS Agent 설정 (소켓 고갈 방지)
+const httpsAgent = new https.Agent({
+    keepAlive: true, // 한번 연결한 통로는 안끊고 재사용(통로 새로 만들때마다 시간 소요 큼)
+    maxSockets: 100, // 동시 연결 수 제한 (기본값은 무제한이나, OS 제한에 걸릴 수 있음)
+    maxFreeSockets: 10, // 장시간 외부 요청 없어도 대기할 소켓 수
+    timeout: 5000 // 최대 5초까지만 대기
+});
+
+// Axios 전역 설정에 Agent 적용
+axios.defaults.httpsAgent = httpsAgent;
 
 // 미들웨어 설정
 app.use(cors()); // CORS 허용 (프로덕션 환경에서는 특정 도메인만 허용하도록 수정 필요)
