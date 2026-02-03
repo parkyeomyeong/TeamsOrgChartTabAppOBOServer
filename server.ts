@@ -9,6 +9,7 @@ import { jwtDecode } from 'jwt-decode';
 import { initDB, execute } from './utils/db';
 import { GET_ORG_CHART_EMPLOYEES, GET_ORG_CHART_DEPARTMENTS } from './queries/orgChart';
 import { EmpData, OrgData } from './types/orgChart';
+import logger from './utils/logger';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -33,16 +34,37 @@ app.use(express.json()); // JSON 요청 본문 파싱
 
 // 요청 시작/종료 로깅 미들웨어
 app.use((req, res, next) => {
-    const start = Date.now();
-    const requestId = Math.random().toString(36).substring(7); // 간단한 요청 ID 생성
-    console.log(`[REQ-START][${requestId}] ${req.method} ${req.url}`);
+    // 1. 요청 시작 시간 (KST String)
+    const startTime = new Date();
+    const startStr = startTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+
+    // 단순 Base64 디코딩이라 성능 부하 거의 없음 (마이크로초 단위)
+    const requestId = Math.random().toString(36).substring(7);
+
+    // [추가] 토큰에서 사용자 정보(UPN/Name) 추출
+    let userPrincipal = 'Guest';
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+        try {
+            const token = req.headers.authorization.split(' ')[1];
+            const decoded: any = jwtDecode(token);
+            userPrincipal = decoded.upn || decoded.name || decoded.sub || 'Unknown';
+        } catch (e) {
+            userPrincipal = 'InvalidToken';
+        }
+    }
 
     res.on('finish', () => {
-        const duration = Date.now() - start;
-        console.log(`[REQ-END][${requestId}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
+        // 2. 요청 종료 시간 및 소요 시간 계산
+        const endTime = new Date();
+        const endStr = endTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+        const duration = endTime.getTime() - startTime.getTime();
+
+        // [User Request Log] 요청 시간 ~ 종료 시간, 사용자, URL, 소요시간
+        // 포맷 예: [2026-02-03 17:30:00-2026-02-03 17:30:02][7x9s1][User:test@daiso.co.kr] GET /api/orgChartData (2000ms)
+        logger.http(`[${startStr}-${endStr}][${requestId}][User:${userPrincipal}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
     });
 
-    // req 객체에 id 심어서 다른 곳에서도 쓸 수 있게 (필요시)
     (req as any).requestId = requestId;
     next();
 });
@@ -50,7 +72,8 @@ app.use((req, res, next) => {
 // 요청 로깅 미들웨어
 app.use((req: Request, res: Response, next) => {
     const now = new Date().toISOString();
-    console.log(`[${now}] ${req.method} ${req.url} - IP: ${req.ip}`);
+    // logger가 이미 시간을 찍어주므로 이중 출력 방지를 위해 제거하거나 debug 레벨로 변경
+    // logger.info(`${req.method} ${req.url} - IP: ${req.ip}`); 
     next();
 });
 
@@ -98,7 +121,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         }
 
         // * 검증 이후 조직도 데이터 가져오기 *
-        console.log(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 순차 수행)...`);
+        logger.info(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 순차 수행)...`);
 
         // [중요] 병렬 실행(Promise.all)은 커넥션을 동시에 2개를 점유하므로, 
         // 동시 접속자가 몰리면 커넥션 풀(Max 10)이 금방 고갈되어 서버가 멈출 수 있습니다.
@@ -107,7 +130,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         const empResult = await execute(GET_ORG_CHART_EMPLOYEES);
         const orgResult = await execute(GET_ORG_CHART_DEPARTMENTS);
 
-        console.log(`[${requestId}] DB 데이터 조회 완료.`);
+        logger.info(`[${requestId}] DB 데이터 조회 완료.`);
 
         // DB에서 조회한 결과를 TypeScript 인터페이스(EmpData, OrgData)로 타입 단언(Type Assertion)하여 사용
         // 이렇게 하면 이후 코드에서 자동완성 및 타입 체크의 도움을 받을 수 있습니다.
@@ -121,12 +144,10 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
 
     } catch (error: any) {
         // 상세 에러 로깅
-        console.error("=========================================");
-        console.error("Error in /api/orgChartData:");
-        console.error("Message:", error.message);
-        console.error("Details:", JSON.stringify(error, null, 2));
-        console.error("Stack:", error.stack);
-        console.error("=========================================");
+        logger.error("=========================================");
+        logger.error(`Error in /api/orgChartData: ${error.message}`);
+        logger.error(`Stack: ${error.stack}`);
+        logger.error("=========================================");
 
         res.status(401).send('인증 또는 데이터 조회에 실패했습니다. 서버 로그를 확인해주세요.');
     }
@@ -140,7 +161,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
 // flow설명 4. 결과를 email로 매칭한 객체로 반환
 app.post('/api/users/presence', async (req: Request, res: Response): Promise<any> => {
     const requestId = (req as any).requestId;
-    console.log(`[${requestId}] Presence Batch Request Started.`);
+    logger.info(`[${requestId}] Presence Batch Request Started.`);
     const authHeader = req.headers.authorization;
     const { ids } = req.body;
 
@@ -161,9 +182,9 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
     };
 
     try {
-        console.log(`[${requestId}] Presence OBO Token 요청...`);
+        logger.info(`[${requestId}] Presence OBO Token 요청...`);
         const response = await cca.acquireTokenOnBehalfOf(oboRequest); // AccessToken 획득
-        console.log(`[${requestId}] Presence OBO Token 획득 성공.`);
+        logger.info(`[${requestId}] Presence OBO Token 획득 성공.`);
         if (!response || !response.accessToken) {
             return res.status(401).send('유효하지 않은 토큰입니다.');
         }
@@ -253,7 +274,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
         res.json(allResults);
 
     } catch (error: any) {
-        console.error("Batch presence fetch failed:", error.response?.data || error.message);
+        logger.error(`Batch presence fetch failed: ${error.message}`);
         res.status(error.response?.status || 500).send(error.response?.data || '서버 내부 오류가 발생했습니다.');
     }
 });
@@ -262,13 +283,13 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
 
 // 404 핸들러 (정의되지 않은 라우트 처리)
 app.use((req: Request, res: Response, next) => {
-    console.log(`[404 Error] Resource not found: ${req.method} ${req.url}`);
+    logger.warn(`[404 Error] Resource not found: ${req.method} ${req.url}`);
     res.status(404).send('요청하신 리소스를 찾을 수 없습니다.');
 });
 
 // 글로벌 에러 핸들러
 app.use((err: any, req: Request, res: Response, next: any) => {
-    console.error(`[500 Error] Unhandled Server Error: ${err.message}`, err);
+    logger.error(`[500 Error] Unhandled Server Error: ${err.message}`);
     res.status(500).send('서버 내부 오류가 발생했습니다.');
 });
 
@@ -278,7 +299,7 @@ app.use((err: any, req: Request, res: Response, next: any) => {
     try {
         await initDB(); // DB 연결 초기화
         app.listen(port, () => {
-            console.log(`Server running at http://localhost:${port}`);
+            logger.info(`Server running at http://localhost:${port}`);
         });
     } catch (err) {
         console.error('Failed to start server due to DB connection error:', err);
