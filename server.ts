@@ -34,16 +34,21 @@ app.use(express.json()); // JSON 요청 본문 파싱
 
 // 요청 시작/종료 로깅 미들웨어
 app.use((req, res, next) => {
-    // 1. 요청 시작 시간 (KST String)
-    const startTime = new Date();
-    const startStr = startTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+    // 날짜 포맷팅 헬퍼 (KST One-liner)
+    const getKST = () => new Date().toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul', hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).replace(/\. /g, '-').replace('.', '');
+
+    const startTime = new Date(); // Duration 계산용
+    const startStr = getKST(); // 로그 출력용
 
     // 단순 Base64 디코딩이라 성능 부하 거의 없음 (마이크로초 단위)
     const requestId = Math.random().toString(36).substring(7);
 
     // [추가] 토큰에서 사용자 정보(UPN/Name) 추출
     let userPrincipal = 'Guest';
-
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
         try {
             const token = req.headers.authorization.split(' ')[1];
@@ -57,12 +62,11 @@ app.use((req, res, next) => {
     res.on('finish', () => {
         // 2. 요청 종료 시간 및 소요 시간 계산
         const endTime = new Date();
-        const endStr = endTime.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+        const endStr = getKST();
         const duration = endTime.getTime() - startTime.getTime();
 
-        // [User Request Log] 요청 시간 ~ 종료 시간, 사용자, URL, 소요시간
-        // 포맷 예: [2026-02-03 17:30:00-2026-02-03 17:30:02][7x9s1][User:test@daiso.co.kr] GET /api/orgChartData (2000ms)
-        logger.http(`[${startStr}-${endStr}][${requestId}][User:${userPrincipal}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
+        // [User Request Log] Clean Format
+        logger.http(`[${startStr} - ${endStr}][${requestId}][User:${userPrincipal}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
     });
 
     (req as any).requestId = requestId;

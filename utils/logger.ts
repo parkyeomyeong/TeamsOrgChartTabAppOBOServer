@@ -4,16 +4,21 @@ import path from 'path';
 
 const logDir = 'logs';
 
-const koreanTime = () => {
-    return new Date().toLocaleString('ko-KR', {
-        timeZone: 'Asia/Seoul',
-        hour12: false
-    });
-};
+// 한국 시간(KST) 반환 헬퍼 (YYYY-MM-DD HH:mm:ss)
+const koreanTime = () => new Date().toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+}).replace(/\. /g, '-').replace('.', ''); // 2026. 02. 03. -> 2026-02-03 포맷 보정
 
 const timestampFormat = winston.format.timestamp({ format: koreanTime });
 const printFormat = winston.format.printf(({ timestamp, level, message }) => {
-    return `${timestamp} [${level.toUpperCase()}]: ${message}`;
+    return `${timestamp} [${level.toUpperCase()}]: ${message} `;
 });
 
 // 공통 Transports 생성 함수 (폴더 분리)
@@ -30,9 +35,12 @@ const createDailyRotateTransport = (folder: string, level: string) => {
 
 // 1. Request Logger (requests.log) - 통계용
 //    - HTTP 요청/응답 요약 정보만 저장
+//    - [수정] 자체 포맷에서 타임스탬프 제거 (메시지 안에 Start-End가 이미 포함됨)
 export const requestLogger = winston.createLogger({
     level: 'info',
-    format: winston.format.combine(timestampFormat, printFormat),
+    format: winston.format.printf(({ message }) => {
+        return message as string; // 시간, 레벨 다 빼고 메시지만 깔끔하게 저장
+    }),
     transports: [
         createDailyRotateTransport('requests', 'info'),
     ]

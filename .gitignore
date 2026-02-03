@@ -2,3 +2,5 @@ data/*
 queries/*
 .env
 node_modules/*
+logs/*
+dist/*
