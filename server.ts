@@ -71,25 +71,6 @@ app.get('/api/healthcheck', async (req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// SSO 토큰 디코딩하여 유저 정보 반환 (삭제예정)
-app.get('/api/me', async (req: Request, res: Response): Promise<any> => {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-        return res.status(401).send('인증 헤더가 없습니다.');
-    }
-
-    const ssoToken = authHeader.split(' ')[1];
-
-    try {
-        // JWT 토큰 디코딩 (검증은 위임하거나 별도 로직 필요, 여기선 정보 추출용)
-        const decodedToken = jwtDecode(ssoToken);
-        res.json(decodedToken);
-    } catch (error) {
-        console.error("Token decoding failed:", error);
-        res.status(400).send('유효하지 않은 토큰입니다.');
-    }
-});
 
 // 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
 app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> => {
@@ -273,103 +254,6 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
 
     } catch (error: any) {
         console.error("Batch presence fetch failed:", error.response?.data || error.message);
-        res.status(error.response?.status || 500).send(error.response?.data || '서버 내부 오류가 발생했습니다.');
-    }
-});
-
-// OBO (On-Behalf-Of) 흐름을 처리하는 엔드포인트
-// 클라이언트(Teams Tab App)로부터 받은 SSO 토큰을 사용하여 Graph API 액세스 토큰을 획득. (삭제예정)
-app.post('/api/token', async (req: Request, res: Response): Promise<any> => {
-    const authHeader = req.headers.authorization;
-
-    // Authorization 헤더 확인
-    if (!authHeader) {
-        return res.status(401).send('인증 헤더가 없습니다.');
-    }
-
-    // "Bearer <token>" 형식에서 토큰 추출
-    const ssoToken = authHeader.split(' ')[1];
-
-    // OBO 요청 객체 생성
-    const oboRequest: msal.OnBehalfOfRequest = {
-        oboAssertion: ssoToken,
-        scopes: ["User.Read"], // 필요한 권한 스코프
-    };
-
-    try {
-        // MSAL을 사용하여 OBO 흐름으로 액세스 토큰 획득
-        const response = await cca.acquireTokenOnBehalfOf(oboRequest);
-
-        if (!response || !response.accessToken) {
-            return res.status(500).send('액세스 토큰 획득에 실패했습니다.');
-        }
-
-        // 획득한 액세스 토큰으로 Microsoft Graph API 호출 (/me 엔드포인트)
-        const graphResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
-            headers: {
-                Authorization: `Bearer ${response.accessToken}`
-            }
-        });
-
-        // 클라이언트에 결과 반환 (Graph API 데이터 및 액세스 토큰)
-        res.json({
-            userInfo: graphResponse.data,
-            accessToken: response.accessToken
-        });
-
-    } catch (error) {
-        console.error("Error acquiring token:", error);
-        res.status(500).send(error);
-    }
-});
-
-
-// 특정 유저의 프로필 사진 가져오기 (삭제예정)
-app.get('/api/user/:id/photo', async (req: Request, res: Response): Promise<any> => {
-    const authHeader = req.headers.authorization;
-    const userId = req.params.id;
-
-    if (!authHeader) {
-        return res.status(401).send('인증 헤더가 없습니다.');
-    }
-
-    const ssoToken = authHeader.split(' ')[1];
-
-    // OBO 요청을 위한 Scopes (User.ReadBasic.All 또는 User.Read.All 필요)
-    const oboRequest: msal.OnBehalfOfRequest = {
-        oboAssertion: ssoToken,
-        scopes: ["User.ReadBasic.All"],
-    };
-
-    try {
-        const response = await cca.acquireTokenOnBehalfOf(oboRequest);
-
-        if (!response || !response.accessToken) {
-            return res.status(401).send('유효하지 않은 토큰입니다.');
-        }
-
-        // Graph API 호출 (이미지 바이너리 응답 필요)
-        const graphResponse = await axios.get(
-            `https://graph.microsoft.com/v1.0/users/${userId}/photo/$value`,
-            {
-                headers: {
-                    Authorization: `Bearer ${response.accessToken}`
-                },
-                responseType: 'arraybuffer', // 중요: 이미지는 바이너리로 받아야 함
-                timeout: 5000 // 5초 타임아웃 설정
-            }
-        );
-
-        // 이미지 헤더 설정 및 전송
-        res.setHeader('Content-Type', graphResponse.headers['content-type']);
-        res.send(graphResponse.data);
-
-    } catch (error: any) {
-        // 사진이 없는 경우 404가 뜰 수 있음
-        if (error.response?.status === 404) {
-            return res.status(404).send('프로필 사진이 없습니다.');
-        }
-        console.error("Photo fetch failed:", error.response?.data || error.message);
         res.status(error.response?.status || 500).send(error.response?.data || '서버 내부 오류가 발생했습니다.');
     }
 });
