@@ -17,6 +17,7 @@ export const initDB = async () => {
             poolMin: 2,
             poolMax: 10,
             poolIncrement: 1,
+            enableStatistics: true // 통계 기능 활성화 (이게 없으면 getStatistics()가 null 반환 가능)
         });
         console.log('Oracle DB 커넥션 풀이 성공적으로 생성되었습니다.');
     } catch (err) {
@@ -44,7 +45,9 @@ export const execute = async (sql: string, binds: any[] = [], options: oracledb.
     let connection;
 
     try {
-        console.log(`[DB] 커넥션 요청 중... (Pool Status: Open=${pool.getStatistics().connectionsOpen}, Busy=${pool.getStatistics().connectionsInUse})`);
+        // connectionsOpen : 사용가능한 커넥션 수(연결해 놓은 커넥션 수)
+        // connectionsInUse : 사용중인 커넥션 수(현재 사용중인 커넥션 수)
+        console.log(`[DB] 커넥션 요청 중... (Pool Status: Open=${pool.getStatistics()?.connectionsOpen}, Busy=${pool.getStatistics()?.connectionsInUse})`);
         connection = await pool.getConnection();
         console.log(`[DB] 커넥션 획득 성공.`);
 
