@@ -44,9 +44,9 @@ app.use((req, res, next) => {
     const startTime = new Date(); // Duration 계산용
     const startStr = getKST(); // 로그 출력용
 
-    // <Log추적ID> Snowflake 스타일 (숫자형)
-    // 예: 1738629457123-4821 (앞쪽 13자리는 시간, 뒤는 난수) -> 시간순 정렬 가능(난수는 원래는 DB이용해서 순차해야하는데 로그니까 임시로 이렇게)
-    const requestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    // <Log추적ID> Snowflake 스타일 (문자열 혼합형)
+    // 예: kz3x91a-5k9a1 (앞쪽은 시간 기반 Base36이라 정렬됨, 적당히 짧고 가독성 좋음)
+    const requestId = Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 7);
 
     // <Log추적ID> 토큰에서 사용자 정보(UPN/Name) 추출
     let userPrincipal = 'Guest';
@@ -71,6 +71,7 @@ app.use((req, res, next) => {
     });
 
     (req as any).requestId = requestId;
+    (req as any).userPrincipal = userPrincipal; // [추가] Global Error Handler에서도 누군지 알 수 있게 req에 붙임
     next();
 });
 
@@ -293,21 +294,23 @@ app.use((req: Request, res: Response, next) => {
 // 글로벌 에러 핸들러 (Spring에서 @ControllerAdvice(?) 역할)
 app.use((err: any, req: Request, res: Response, next: any) => {
     const requestId = (req as any).requestId;
+    const userPrincipal = (req as any).userPrincipal || 'Unknown'; // [추가] 유저 정보 가져오기
 
     // 1. 상태 코드 결정 (에러 객체에 status가 있으면 쓰고, 없으면 500)
     const status = err.status || 500;
 
     // 2. 에러 로그 (Request ID 포함)
-    logger.error("=========================================");
-    logger.error(`[${requestId}][GlobalHandler] 요청 정보: ${req.method} ${req.url}`);
-    logger.error(`[${requestId}][GlobalHandler] ${status} Error: ${err.message}`);
+    logger.error(`[START][${requestId}]=========================================`);
+    logger.error(`[GlobalHandler] 요청 정보: ${req.method} ${req.url}`);
+    logger.error(`[GlobalHandler] 요청 사용자: ${userPrincipal}`); // [추가] 누가 에러 냈는지 기록
+    logger.error(`[GlobalHandler] ${status} Error: ${err.message}`);
 
     // [Stack Trace] 에러가 발생한 정확한 위치(파일명, 줄번호)와 함수 호출 순서를 기록함
     // 예: "at orgChartData (server.ts:150:15)" 처럼 나옴 -> 디버깅의 핵심 단서 (블랙박스 역할)
     if (err.stack) {
-        logger.error(`[${requestId}][Stack Info] \n${err.stack}`);
+        logger.error(`[Stack Info] \n${err.stack}`);
     }
-    logger.error("=========================================");
+    logger.error(`[END][${requestId}]=========================================`);
 
     // 3. 클라이언트 응답 (JSON 포맷)
     res.status(status).json({
