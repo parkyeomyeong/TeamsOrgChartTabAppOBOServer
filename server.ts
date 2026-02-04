@@ -1,3 +1,7 @@
+// [중요] 프로세스 전체의 시간대를 한국 시간(KST)으로 고정 (서버 OS 시간이 UTC여도 무시함)
+// 로그 파일 회전(Rotation) 시점(00:00)과 Date.now() 등 모든 시간 기준이 KST가 됨
+process.env.TZ = 'Asia/Seoul';
+
 import express, { Request, Response, NextFunction } from 'express';
 import * as msal from '@azure/msal-node';
 import axios from 'axios';
