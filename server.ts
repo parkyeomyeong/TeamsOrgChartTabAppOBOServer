@@ -299,6 +299,7 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 
     // 2. 에러 로그 (Request ID 포함)
     logger.error("=========================================");
+    logger.error(`[${requestId}][GlobalHandler] 요청 정보: ${req.method} ${req.url}`);
     logger.error(`[${requestId}][GlobalHandler] ${status} Error: ${err.message}`);
 
     // [Stack Trace] 에러가 발생한 정확한 위치(파일명, 줄번호)와 함수 호출 순서를 기록함
