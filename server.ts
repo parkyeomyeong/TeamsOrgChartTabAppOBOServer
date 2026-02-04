@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import * as msal from '@azure/msal-node';
 import axios from 'axios';
 import cors from 'cors';
@@ -101,13 +101,14 @@ app.get('/api/healthcheck', async (req: Request, res: Response) => {
 
 
 // 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
-app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> => {
+// 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
+app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     const requestId = (req as any).requestId;
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
-        logger.error(`[${requestId}] 인증 헤더 누락: Authorization Header is missing`);
-        return res.status(401).send('인증 헤더가 없습니다.');
+        // [수정] 401 에러도 Global Handler로 위임
+        return next({ status: 401, message: '인증 헤더가 없습니다.' });
     }
 
     const ssoToken = authHeader.split(' ')[1];
@@ -123,7 +124,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         const response = await cca.acquireTokenOnBehalfOf(oboRequest);
 
         if (!response || !response.accessToken) {
-            return res.status(401).send('유효하지 않은 토큰입니다.');
+            return next({ status: 401, message: '유효하지 않은 토큰입니다.' });
         }
 
         // * 검증 이후 조직도 데이터 가져오기 *
@@ -149,13 +150,8 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         });
 
     } catch (error: any) {
-        // 상세 에러 로깅
-        logger.error("=========================================");
-        logger.error(`Error in /api/orgChartData: ${error.message}`);
-        logger.error(`Stack: ${error.stack}`);
-        logger.error("=========================================");
-
-        res.status(401).send('인증 또는 데이터 조회에 실패했습니다. 서버 로그를 확인해주세요.');
+        // [수정] 모든 에러 처리를 Global Handler로 위임
+        next(error);
     }
 });
 
@@ -165,18 +161,19 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
 // flow설명 2. email로 받은거는 uuid로 변환
 // flow설명 3. uuid로 presence 조회
 // flow설명 4. 결과를 email로 매칭한 객체로 반환
-app.post('/api/users/presence', async (req: Request, res: Response): Promise<any> => {
+// flow설명 4. 결과를 email로 매칭한 객체로 반환
+app.post('/api/users/presence', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     const requestId = (req as any).requestId;
     logger.info(`[${requestId}] Presence Batch Request Started.`);
     const authHeader = req.headers.authorization;
     const { ids } = req.body;
 
     if (!authHeader) {
-        return res.status(401).send('인증 헤더가 없습니다.');
+        return next({ status: 401, message: '인증 헤더가 없습니다.' });
     }
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
-        return res.status(400).send('유효하지 않은 ID 목록입니다.');
+        return next({ status: 400, message: '유효하지 않은 ID 목록입니다.' });
     }
 
     const ssoToken = authHeader.split(' ')[1];
@@ -192,7 +189,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
         const response = await cca.acquireTokenOnBehalfOf(oboRequest); // AccessToken 획득
         logger.info(`[${requestId}] Presence OBO Token 획득 성공.`);
         if (!response || !response.accessToken) {
-            return res.status(401).send('유효하지 않은 토큰입니다.');
+            return next({ status: 401, message: '유효하지 않은 토큰입니다.' });
         }
         const accessToken = response.accessToken;
 
@@ -201,7 +198,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
 
         // ID 목록을 15개씩 청크로 나누어 처리
         for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-            console.log(`[${requestId}] Chunk Processing [${i} - ${i + BATCH_SIZE}]`);
+            logger.info(`[${requestId}] Chunk Processing [${i} - ${i + BATCH_SIZE}]`);
             const chunkIds = ids.slice(i, i + BATCH_SIZE);
 
             try {
@@ -219,7 +216,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                     const filterClause = emailIds.map((email: string) => `userPrincipalName eq '${email}'`).join(' or ');
 
                     try {
-                        console.log(`[${requestId}] Graph API User Lookup Request (Email -> UUID)...`);
+                        logger.info(`[${requestId}] Graph API User Lookup Request (Email -> UUID)...`);
                         const userLookupResponse = await axios.get(
                             `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
                             {
@@ -227,7 +224,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                                 timeout: 5000 // 5초 타임아웃 설정 (무한 대기 방지)
                             }
                         );
-                        console.log(`[${requestId}] Graph API User Lookup Response Received.`);
+                        logger.info(`[${requestId}] Graph API User Lookup Response Received.`);
 
                         const foundUsers = userLookupResponse.data.value;
                         const foundIds = foundUsers.map((u: any) => {
@@ -237,7 +234,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                         resolvedUuids = [...resolvedUuids, ...foundIds];
 
                     } catch (lookupError) {
-                        console.error(`Chunk ${i / BATCH_SIZE} User ID lookup failed:`, lookupError);
+                        logger.error(`[${requestId}] Chunk ${i / BATCH_SIZE} User ID lookup failed: ${lookupError}`);
                         // ID 조회 실패 시 해당 청크의 이메일 기반 조회는 건너뜀 (기존 UUID만으로 진행 시도 가능하지만 복잡성 줄임)
                     }
                 }
@@ -247,7 +244,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                 }
 
                 // 3. 확보된 UUID로 Presence 조회
-                console.log(`[${requestId}] Graph API Presence Request...`);
+                logger.info(`[${requestId}] Graph API Presence Request...`);
                 const graphResponse = await axios.post(
                     `https://graph.microsoft.com/v1.0/communications/getPresencesByUserId`,
                     { ids: resolvedUuids },
@@ -259,7 +256,7 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                         timeout: 5000 // 5초 타임아웃 설정
                     }
                 );
-                console.log(`[${requestId}] Graph API Presence Response Received.`);
+                logger.info(`[${requestId}] Graph API Presence Response Received.`);
 
                 // 4. 응답 데이터 포맷팅 (이메일 포함) 및 결과 수집
                 const presenceList = graphResponse.data.value;
@@ -272,16 +269,16 @@ app.post('/api/users/presence', async (req: Request, res: Response): Promise<any
                 allResults.push(...formattedChunk);
 
             } catch (chunkError) {
-                console.error(`Error processing chunk starting at index ${i}:`, chunkError);
-                // 특정 청크 실패 시 전체 실패가 아닌, 해당 청크만 건너뛰고 계속 진행
+                logger.error(`[${requestId}] Error processing chunk starting at index ${i}: ${chunkError}`);
+                // 특정 청크 실패 시 전체 실패가 아닌, 해당 청크만 건너뜀
             }
         }
 
         res.json(allResults);
 
     } catch (error: any) {
-        logger.error(`Batch presence fetch failed: ${error.message}`);
-        res.status(error.response?.status || 500).send(error.response?.data || '서버 내부 오류가 발생했습니다.');
+        // [수정] 모든 에러 처리를 Global Handler로 위임
+        next(error);
     }
 });
 
@@ -293,10 +290,30 @@ app.use((req: Request, res: Response, next) => {
     res.status(404).send('요청하신 리소스를 찾을 수 없습니다.');
 });
 
-// 글로벌 에러 핸들러
+// 글로벌 에러 핸들러 (Spring에서 @ControllerAdvice(?) 역할)
 app.use((err: any, req: Request, res: Response, next: any) => {
-    logger.error(`[500 Error] Unhandled Server Error: ${err.message}`);
-    res.status(500).send('서버 내부 오류가 발생했습니다.');
+    const requestId = (req as any).requestId;
+
+    // 1. 상태 코드 결정 (에러 객체에 status가 있으면 쓰고, 없으면 500)
+    const status = err.status || 500;
+
+    // 2. 에러 로그 (Request ID 포함)
+    logger.error("=========================================");
+    logger.error(`[${requestId}][GlobalHandler] ${status} Error: ${err.message}`);
+
+    // [Stack Trace] 에러가 발생한 정확한 위치(파일명, 줄번호)와 함수 호출 순서를 기록함
+    // 예: "at orgChartData (server.ts:150:15)" 처럼 나옴 -> 디버깅의 핵심 단서 (블랙박스 역할)
+    if (err.stack) {
+        logger.error(`[${requestId}][Stack Info] \n${err.stack}`);
+    }
+    logger.error("=========================================");
+
+    // 3. 클라이언트 응답 (JSON 포맷)
+    res.status(status).json({
+        success: false,
+        requestId: requestId, // 클라이언트가 이 ID로 문의하면 로그 찾기 쉬움
+        message: status === 500 ? '서버 내부 오류가 발생했습니다.' : err.message
+    });
 });
 
 // 서버 시작
