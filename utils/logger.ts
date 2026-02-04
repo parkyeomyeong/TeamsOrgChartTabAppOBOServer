@@ -25,11 +25,11 @@ const printFormat = winston.format.printf(({ timestamp, level, message }) => {
 const createDailyRotateTransport = (folder: string, level: string) => {
     return new DailyRotateFile({
         level: level,
-        datePattern: 'YYYY-MM-DD',
-        dirname: path.join(logDir, folder), // logs/requests, logs/app 등으로 분리
-        filename: `%DATE%.log`, // 파일명은 날짜만 (폴더로 구분되므로)
-        maxFiles: '30d',
-        zippedArchive: true,
+        datePattern: 'YYYY-MM-DD', // [설정] 이거 하면 해당 패턴에 따라 매일 파일이 새로 생성됨 (하루 단위)
+        dirname: path.join(logDir, folder),
+        filename: `%DATE%.log`,
+        maxFiles: '180d', // [설정] 180일 지난 로그는 자동으로 삭제됨
+        zippedArchive: true, // [설정] 지난 로그는 .gz로 압축하여 용량을 아낌 (1/10으로 줄어든다고 함)
     });
 };
 

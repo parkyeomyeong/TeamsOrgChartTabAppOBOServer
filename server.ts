@@ -44,10 +44,11 @@ app.use((req, res, next) => {
     const startTime = new Date(); // Duration 계산용
     const startStr = getKST(); // 로그 출력용
 
-    // 단순 Base64 디코딩이라 성능 부하 거의 없음 (마이크로초 단위)
-    const requestId = Math.random().toString(36).substring(7);
+    // <Log추적ID> Snowflake 스타일 (숫자형)
+    // 예: 1738629457123-4821 (앞쪽 13자리는 시간, 뒤는 난수) -> 시간순 정렬 가능(난수는 원래는 DB이용해서 순차해야하는데 로그니까 임시로 이렇게)
+    const requestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
 
-    // [추가] 토큰에서 사용자 정보(UPN/Name) 추출
+    // <Log추적ID> 토큰에서 사용자 정보(UPN/Name) 추출
     let userPrincipal = 'Guest';
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
         try {
@@ -59,7 +60,7 @@ app.use((req, res, next) => {
         }
     }
 
-    res.on('finish', () => {
+    res.on('finish', () => { //res.send(), res.json()이 호출되면 이 함수를 거쳐 clien에게 전송!
         // 2. 요청 종료 시간 및 소요 시간 계산
         const endTime = new Date();
         const endStr = getKST();
@@ -105,6 +106,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
+        logger.error(`[${requestId}] 인증 헤더 누락: Authorization Header is missing`);
         return res.status(401).send('인증 헤더가 없습니다.');
     }
 
@@ -131,8 +133,8 @@ app.get('/api/orgChartData', async (req: Request, res: Response): Promise<any> =
         // 동시 접속자가 몰리면 커넥션 풀(Max 10)이 금방 고갈되어 서버가 멈출 수 있습니다.
         // 안정성을 위해 하나씩 실행하고 반납하도록 순차 실행으로 변경합니다.
 
-        const empResult = await execute(GET_ORG_CHART_EMPLOYEES);
-        const orgResult = await execute(GET_ORG_CHART_DEPARTMENTS);
+        const empResult = await execute(GET_ORG_CHART_EMPLOYEES, [], {}, requestId);
+        const orgResult = await execute(GET_ORG_CHART_DEPARTMENTS, [], {}, requestId);
 
         logger.info(`[${requestId}] DB 데이터 조회 완료.`);
 
