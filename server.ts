@@ -36,7 +36,7 @@ axios.defaults.httpsAgent = httpsAgent;
 app.use(cors()); // CORS 허용 (프로덕션 환경에서는 특정 도메인만 허용하도록 수정 필요)
 app.use(express.json()); // JSON 요청 본문 파싱
 
-// 요청 시작/종료 로깅 미들웨어
+// 모든 요청 시작/종료 로깅처리를 위한 부분(like Spring AOP!)
 app.use((req, res, next) => {
     // 날짜 포맷팅 헬퍼 (KST One-liner)
     const getKST = () => new Date().toLocaleString('ko-KR', {
@@ -106,7 +106,6 @@ app.get('/api/healthcheck', async (req: Request, res: Response) => {
 
 
 // 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
-// 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
 app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
     const requestId = (req as any).requestId;
     const authHeader = req.headers.authorization;
@@ -136,8 +135,22 @@ app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunct
         logger.info(`[${requestId}] DB 데이터 조회 시작 (Employee, Organization 순차 수행)...`);
 
         // [중요] 병렬 실행(Promise.all)은 커넥션을 동시에 2개를 점유하므로, 
-        // 동시 접속자가 몰리면 커넥션 풀(Max 10)이 금방 고갈되어 서버가 멈출 수 있습니다.
-        // 안정성을 위해 하나씩 실행하고 반납하도록 순차 실행으로 변경합니다.
+        // 동시 접속자가 몰리면 커넥션 풀(현재 설정 Max 10)이 금방 고갈되어 동시에 처리 가능한 요청 수가 줄어듭니다.
+        // 안정성을 위해 하나씩 실행하고 반납하도록 순차 실행합니다.
+        // (예시)
+        //[Promise.all 병렬]
+        // 시간 →  ────────────────────────────>
+        // execute1:  ■ getConn A ■■■■ SELECT 실행중 ■■■■ close A ■
+        // execute2:  ■ getConn B ■■■■ SELECT 실행중 ■■■■ close B ■
+        //                        ↑                       ↑
+        //                     이 구간 동안 커넥션 2개 동시 점유
+
+        // [순차 실행]
+        // 시간 →  ────────────────────────────>
+        // execute1:  ■ getConn A ■■■■ SELECT ■■■■ close A ■
+        // execute2:                                        ■ getConn B ■■■■ SELECT ■■■■ close B ■
+        //                                                  ↑
+        //                                           항상 커넥션 1개만 점유
 
         const empResult = await execute(GET_ORG_CHART_EMPLOYEES, [], {}, requestId);
         const orgResult = await execute(GET_ORG_CHART_DEPARTMENTS, [], {}, requestId);
@@ -148,6 +161,9 @@ app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunct
         // 이렇게 하면 이후 코드에서 자동완성 및 타입 체크의 도움을 받을 수 있습니다.
         const dbEmpList = empResult.rows as EmpData[];
         const dbOrgList = orgResult.rows as OrgData[];
+
+        // const dbEmpList = empList;
+        // const dbOrgList = orgList;
 
         res.json({
             orgList: dbOrgList,

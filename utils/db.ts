@@ -18,11 +18,18 @@ export const initDB = async () => {
             poolMin: 2,
             poolMax: 10,
             poolIncrement: 1,
-            enableStatistics: true // 통계 기능 활성화 (이게 없으면 getStatistics()가 null 반환 가능)
+            connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT) || 60, // DB 연결 시도 제한 시간 (초). .env의 DB_CONNECT_TIMEOUT으로 조정 가능
+            enableStatistics: true  // 통계 기능 활성화 (이게 없으면 getStatistics()가 null 반환 가능)
         });
-        logger.info('Oracle DB 커넥션 풀이 성공적으로 생성되었습니다.');
+
+        // [연결 테스트] createPool()은 풀 '객체'만 만들 뿐, 실제 DB 연결을 보장하지 않음 (Thin 모드 = Lazy Connection)
+        // getConnection()을 호출해야 실제 TCP 연결이 발생하므로, 여기서 실패하면 DB가 안 붙는 것
+        const testConn = await pool.getConnection();
+        await testConn.close();
+
+        logger.info('Oracle DB 커넥션 풀 생성 및 연결 테스트 성공.');
     } catch (err) {
-        logger.error(`Oracle DB 커넥션 풀 생성 실패: ${err}`);
+        logger.error(`Oracle DB 연결 실패: ${err}`);
         throw err;
     }
 };
