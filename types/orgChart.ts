@@ -9,18 +9,19 @@ export interface OrgData {
 }
 
 export interface EmpData {
-    empId: string;
-    empNm: string;
-    jobTitileCd: string;
-    jobTitleDesc: string;
-    posisionCd: string;
-    posisionDesc: string;
-    compCd: string;
+    id: string;
+    name: string;
+    position: string;
+    role: string;
+    companyCode: string;
+    companyName: string;
     orgId: string;
-    orgNm: string;
-    offcTelNo: string;
-    moblTelNo: string;
-    emailAddr: string;
+    department: string;
+    orgFullName: string;
+    extension: string;
+    mobile: string;
+    email: string;
+    description: string;
 }
 
 export interface OrganizationData {
