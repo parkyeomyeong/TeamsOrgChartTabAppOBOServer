@@ -13,6 +13,7 @@ import { jwtDecode } from 'jwt-decode';
 import { initDB, execute } from './utils/db';
 import { GET_ORG_CHART_EMPLOYEES, GET_ORG_CHART_DEPARTMENTS } from './queries/orgChart';
 import { EmpData, OrgData } from './types/orgChart';
+import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
 import logger from './utils/logger';
 
 // 환경 변수 설정 로드
@@ -102,6 +103,16 @@ const cca = new msal.ConfidentialClientApplication(msalConfig);
 // health check
 app.get('/api/healthcheck', async (req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// 수동 배치 실행 (SSO 없이 즉시 동기화)
+app.get('/api/batch/sync', async (req: Request, res: Response) => {
+    try {
+        await syncChartTables();
+        res.json({ success: true, message: '배치 동기화 완료' });
+    } catch (err: any) {
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 
@@ -345,6 +356,7 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 
     try {
         await initDB(); // DB 연결 초기화
+        startBatchScheduler(); // 일일 배치 스케줄러 등록 (매일 01:00 KST)
         app.listen(port, () => {
             logger.info(`Server running at http://localhost:${port}`);
         });
