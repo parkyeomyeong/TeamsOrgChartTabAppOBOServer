@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { execute } from '../utils/db';
+import { execute, executeTransaction } from '../utils/db';
 import logger from '../utils/logger';
 import {
     COUNT_SOURCE_USERS, COUNT_SOURCE_GROUPS,
@@ -28,14 +28,14 @@ const syncChartTables = async () => {
             return;
         }
 
-        // 2. _CHART 테이블 비우기 + 원본 데이터 복사 (순차 실행)
-        logger.info(`[${batchId}] HR_TO_TEAMS_GROUPS_CHART 동기화 중...`);
-        await execute(DELETE_CHART_GROUPS, [], { autoCommit: false }, batchId);
-        await execute(INSERT_CHART_GROUPS, [], { autoCommit: true }, batchId);
-
-        logger.info(`[${batchId}] HR_TO_TEAMS_USER_CHART 동기화 중...`);
-        await execute(DELETE_CHART_USERS, [], { autoCommit: false }, batchId);
-        await execute(INSERT_CHART_USERS, [], { autoCommit: true }, batchId);
+        // 2. 하나의 트랜잭션으로 DELETE → INSERT 실행
+        //    중간에 실패하면 전체 롤백 → 기존 _CHART 데이터 보존
+        await executeTransaction([
+            DELETE_CHART_GROUPS,
+            INSERT_CHART_GROUPS,
+            DELETE_CHART_USERS,
+            INSERT_CHART_USERS,
+        ], batchId);
 
         logger.info(`[${batchId}] ===== 일일 배치 완료: USER ${userCnt}건, GROUPS ${groupCnt}건 동기화 =====`);
 

@@ -87,3 +87,44 @@ export const execute = async (sql: string, binds: any[] = [], options: oracledb.
         }
     }
 };
+
+// 트랜잭션 실행: 하나의 커넥션에서 여러 SQL을 순차 실행하고, 실패 시 전체 롤백
+export const executeTransaction = async (queries: string[], requestId?: string) => {
+    if (!pool) {
+        throw new Error('데이터베이스 풀이 초기화되지 않았습니다.');
+    }
+
+    let connection;
+
+    try {
+        connection = await pool.getConnection();
+        logger.info(`[${requestId}][DB] 트랜잭션 시작 (쿼리 ${queries.length}건)`);
+
+        for (const sql of queries) {
+            await connection.execute(sql, [], {
+                outFormat: oracledb.OUT_FORMAT_OBJECT,
+                autoCommit: false  // 개별 커밋 안 함
+            });
+        }
+
+        await connection.commit();  // 전부 성공하면 한 번에 커밋
+        logger.info(`[${requestId}][DB] 트랜잭션 커밋 완료`);
+
+    } catch (err) {
+        if (connection) {
+            await connection.rollback();  // 하나라도 실패하면 전체 롤백
+            logger.error(`[${requestId}][DB] 트랜잭션 롤백 완료`);
+        }
+        logger.error(`[${requestId}][DB] 트랜잭션 실행 오류: ${err}`);
+        throw err;
+    } finally {
+        if (connection) {
+            try {
+                await connection.close();
+            } catch (closeErr) {
+                logger.error(`[${requestId}][DB] 커넥션 반납 중 오류: ${closeErr}`);
+            }
+        }
+    }
+};
+
