@@ -80,10 +80,29 @@ export const errorLogger = winston.createLogger({
     ]
 });
 
+// 4. Batch Logger (batch.log) - 배치 전용
+//    - 일일 배치(원본→_CHART 동기화) 실행 로그만 별도 저장
+export const batchLogger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(timestampFormat, printFormat),
+    transports: [
+        createDailyRotateTransport('batch', 'info'),
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                timestampFormat,
+                printFormat
+            )
+        })
+    ]
+});
+
 // Default export for backward compatibility (optional)
 export default {
     info: (msg: string) => appLogger.info(msg),
     warn: (msg: string) => appLogger.warn(msg),
     error: (msg: string) => errorLogger.error(msg),
     http: (msg: string) => requestLogger.info(msg),
+    batch: (msg: string) => batchLogger.info(msg),
+    batchError: (msg: string) => { batchLogger.error(msg); errorLogger.error(msg); },
 };

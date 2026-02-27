@@ -11,7 +11,7 @@ import {
 // 원본 데이터에 문제가 생겨도 _CHART 테이블에는 마지막 정상 데이터가 유지됨
 const syncChartTables = async () => {
     const batchId = `batch-${Date.now().toString(36)}`;
-    logger.info(`[${batchId}] ===== 일일 배치 시작: 원본 → _CHART 테이블 동기화 =====`);
+    logger.batch(`[${batchId}] ===== 일일 배치 시작: 원본 → _CHART 테이블 동기화 =====`);
 
     try {
         // 1. 원본 테이블 건수 확인 (0건이면 스킵 — 빈 데이터로 덮어쓰기 방지)
@@ -21,10 +21,10 @@ const syncChartTables = async () => {
         const userCnt = (userCount.rows as any[])[0]?.cnt || 0;
         const groupCnt = (groupCount.rows as any[])[0]?.cnt || 0;
 
-        logger.info(`[${batchId}] 원본 건수 확인 — USER: ${userCnt}건, GROUPS: ${groupCnt}건`);
+        logger.batch(`[${batchId}] 원본 건수 확인 — USER: ${userCnt}건, GROUPS: ${groupCnt}건`);
 
         if (userCnt === 0 || groupCnt === 0) {
-            logger.warn(`[${batchId}] 원본 테이블이 비어있어 배치를 스킵합니다. 기존 _CHART 데이터를 유지합니다.`);
+            logger.batch(`[${batchId}] 원본 테이블이 비어있어 배치를 스킵합니다. 기존 _CHART 데이터를 유지합니다.`);
             return;
         }
 
@@ -37,10 +37,10 @@ const syncChartTables = async () => {
             INSERT_CHART_USERS,
         ], batchId);
 
-        logger.info(`[${batchId}] ===== 일일 배치 완료: USER ${userCnt}건, GROUPS ${groupCnt}건 동기화 =====`);
+        logger.batch(`[${batchId}] ===== 일일 배치 완료: USER ${userCnt}건, GROUPS ${groupCnt}건 동기화 =====`);
 
     } catch (err) {
-        logger.error(`[${batchId}] 일일 배치 실패: ${err}`);
+        logger.batchError(`[${batchId}] 일일 배치 실패: ${err}`);
     }
 };
 
@@ -49,7 +49,7 @@ export const startBatchScheduler = () => {
     cron.schedule('0 1 * * *', () => {
         syncChartTables();
     });
-    logger.info('일일 배치 스케줄러 등록 완료 (매일 01:00 KST)');
+    logger.batch('일일 배치 스케줄러 등록 완료 (매일 01:00 KST)');
 };
 
 // 수동 실행용 (테스트 또는 긴급 동기화)
