@@ -15,6 +15,7 @@ import { GET_ORG_CHART_EMPLOYEES, GET_ORG_CHART_DEPARTMENTS } from './queries/or
 import { EmpData, OrgData } from './types/orgChart';
 import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
 import logger from './utils/logger';
+import { resolveEmailsToUuids, preloadUserUuids } from './utils/userIdCache';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -23,9 +24,15 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // [중요] Axios용 HTTPS Agent 설정 (소켓 고갈 방지)
+// maxSockets 근거: Graph API Rate Limit 기준
+//   - Presence API: 1,500 req/30s (50 TPS) per app per tenant
+//   - 캐시 적용 후 User Lookup은 거의 발생하지 않으므로 Presence 기준으로 산정
+//   - 동시 소켓 필요 = 50 TPS × 0.2s(평균 응답시간) = ~10개 + 여유
+//   - 100개면 충분하며, 늘려도 Graph API rate limit이 먼저 막히므로 의미 없음
+// 공식 문서: https://learn.microsoft.com/en-us/graph/api/cloudcommunications-getpresencesbyuserid
 const httpsAgent = new https.Agent({
     keepAlive: true, // 한번 연결한 통로는 안끊고 재사용(통로 새로 만들때마다 시간 소요 큼)
-    maxSockets: 100, // 동시 연결 수 제한 (기본값은 무제한이나, OS 제한에 걸릴 수 있음)
+    maxSockets: 100, // Graph API rate limit(50 TPS) 대비 충분한 소켓 수
     maxFreeSockets: 10, // 장시간 외부 요청 없어도 대기할 소켓 수
     timeout: 5000 // 최대 5초까지만 대기
 });
@@ -228,72 +235,45 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
         const BATCH_SIZE = 15;
         const allResults: any[] = [];
 
-        // ID 목록을 15개씩 청크로 나누어 처리
-        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-            logger.info(`[${requestId}] Chunk Processing [${i} - ${i + BATCH_SIZE}]`);
-            const chunkIds = ids.slice(i, i + BATCH_SIZE);
+        // ── 1단계: 이메일 → UUID 변환 (캐시 우선, 미스만 Graph API 호출) ──
+        const emailIds = ids.filter((id: string) => id.includes('@'));
+        const uuidIds = ids.filter((id: string) => !id.includes('@'));
+
+        const { resolved, uuidToEmailMap } = await resolveEmailsToUuids(emailIds, accessToken, requestId);
+
+        // 모든 UUID 취합 (직접 넘어온 UUID + 이메일에서 변환된 UUID)
+        const allUuids = [
+            ...uuidIds,
+            ...resolved.map(r => r.uuid)
+        ];
+
+        if (allUuids.length === 0) {
+            return res.json([]);
+        }
+
+        // ── 2단계: UUID로 Presence 일괄 조회 (최대 15명/요청) ──
+        const PRESENCE_BATCH_SIZE = 15;
+        for (let i = 0; i < allUuids.length; i += PRESENCE_BATCH_SIZE) {
+            const chunkUuids = allUuids.slice(i, i + PRESENCE_BATCH_SIZE);
 
             try {
-                // 1. Chunk 내에서 이메일과 UUID 분리
-                const emailIds = chunkIds.filter((id: string) => id.includes('@'));
-                const uuidIds = chunkIds.filter((id: string) => !id.includes('@'));
-
-                let resolvedUuids: string[] = [...uuidIds];
-
-                // UUID -> Email 매핑을 위한 맵
-                const userIdToEmailMap = new Map<string, string>();
-
-                // 2. 이메일이 있다면 UUID로 변환 (Graph API $filter 사용)
-                if (emailIds.length > 0) {
-                    const filterClause = emailIds.map((email: string) => `userPrincipalName eq '${email}'`).join(' or ');
-
-                    try {
-                        logger.info(`[${requestId}] Graph API User Lookup Request (Email -> UUID)...`);
-                        const userLookupResponse = await axios.get(
-                            `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
-                            {
-                                headers: { Authorization: `Bearer ${accessToken}` },
-                                timeout: 5000 // 5초 타임아웃 설정 (무한 대기 방지)
-                            }
-                        );
-                        logger.info(`[${requestId}] Graph API User Lookup Response Received.`);
-
-                        const foundUsers = userLookupResponse.data.value;
-                        const foundIds = foundUsers.map((u: any) => {
-                            userIdToEmailMap.set(u.id, u.userPrincipalName); // ID와 이메일 매핑 저장
-                            return u.id;
-                        });
-                        resolvedUuids = [...resolvedUuids, ...foundIds];
-
-                    } catch (lookupError) {
-                        logger.error(`[${requestId}] Chunk ${i / BATCH_SIZE} User ID lookup failed: ${lookupError}`);
-                        // ID 조회 실패 시 해당 청크의 이메일 기반 조회는 건너뜀 (기존 UUID만으로 진행 시도 가능하지만 복잡성 줄임)
-                    }
-                }
-
-                if (resolvedUuids.length === 0) {
-                    continue; // 조회할 대상이 없으면 다음 청크로
-                }
-
-                // 3. 확보된 UUID로 Presence 조회
-                logger.info(`[${requestId}] Graph API Presence Request...`);
+                logger.info(`[${requestId}] Graph API Presence Request [${i}~${i + chunkUuids.length}] (${chunkUuids.length}명)...`);
                 const graphResponse = await axios.post(
                     `https://graph.microsoft.com/v1.0/communications/getPresencesByUserId`,
-                    { ids: resolvedUuids },
+                    { ids: chunkUuids },
                     {
                         headers: {
                             Authorization: `Bearer ${accessToken}`,
                             "Content-Type": "application/json"
                         },
-                        timeout: 5000 // 5초 타임아웃 설정
+                        timeout: 5000
                     }
                 );
                 logger.info(`[${requestId}] Graph API Presence Response Received.`);
 
-                // 4. 응답 데이터 포맷팅 (이메일 포함) 및 결과 수집
                 const presenceList = graphResponse.data.value;
                 const formattedChunk = presenceList.map((item: any) => ({
-                    email: userIdToEmailMap.get(item.id) || item.id,
+                    email: uuidToEmailMap.get(item.id) || item.id,
                     availability: item.availability,
                     activity: item.activity
                 }));
@@ -301,8 +281,7 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
                 allResults.push(...formattedChunk);
 
             } catch (chunkError) {
-                logger.error(`[${requestId}] Error processing chunk starting at index ${i}: ${chunkError}`);
-                // 특정 청크 실패 시 전체 실패가 아닌, 해당 청크만 건너뜀
+                logger.error(`[${requestId}] Presence chunk error (index ${i}): ${chunkError}`);
             }
         }
 
@@ -355,8 +334,12 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 (async () => {
 
     try {
-        await initDB(); // DB 연결 초기화
+        //await initDB(); // DB 연결 초기화
         startBatchScheduler(); // 일일 배치 스케줄러 등록 (매일 01:00 KST)
+
+        // UUID 캐시 프리로드 (서버 시작을 지연시키지 않기 위해 비동기 실행)
+        preloadUserUuids(cca).catch((err: any) => logger.warn(`[UUID Preload] 비동기 프리로드 실패: ${err}`));
+
         app.listen(port, () => {
             logger.info(`Server running at http://localhost:${port}`);
         });
