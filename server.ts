@@ -334,7 +334,7 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 (async () => {
 
     try {
-        //await initDB(); // DB 연결 초기화
+        await initDB(); // DB 연결 초기화
         startBatchScheduler(); // 일일 배치 스케줄러 등록 (매일 01:00 KST)
 
         // UUID 캐시 프리로드 (서버 시작을 지연시키지 않기 위해 비동기 실행)

@@ -60,28 +60,48 @@ export const resolveEmailsToUuids = async (
         }
     }
 
-    // 2. 캐시 미스 → Graph API로 조회 후 캐시 저장
+    // 2. 캐시 미스 → 15건씩 배치로 Graph API 조회 + 캐시/DB 저장
     if (uncached.length > 0) {
-        try {
-            const filterClause = uncached.map(e => `userPrincipalName eq '${e}'`).join(' or ');
-            logger.info(`[${requestId}] Graph API User Lookup (cache miss: ${uncached.length}건)...`);
+        const LOOKUP_BATCH = 15; // URL 길이 제한 (~750자 이내 유지)
+        logger.info(`[${requestId}] Graph API User Lookup (cache miss: ${uncached.length}건, ${Math.ceil(uncached.length / LOOKUP_BATCH)}배치)...`);
 
-            const response = await axios.get(
-                `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
-                {
-                    headers: { Authorization: `Bearer ${accessToken}` },
-                    timeout: 5000
+        for (let i = 0; i < uncached.length; i += LOOKUP_BATCH) {
+            const batch = uncached.slice(i, i + LOOKUP_BATCH);
+            const filterClause = batch.map(e => `userPrincipalName eq '${e}'`).join(' or ');
+
+            try {
+                const response = await axios.get(
+                    `https://graph.microsoft.com/v1.0/users?$filter=${filterClause}&$select=id,userPrincipalName`,
+                    {
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                        timeout: 5000
+                    }
+                );
+
+                for (const u of response.data.value) {
+                    const email = u.userPrincipalName;
+                    const uuid = u.id;
+
+                    // 인메모리 캐시에 저장
+                    cache.set(email.toLowerCase(), uuid);
+                    resolved.push({ email, uuid });
+
+                    // DB에 저장 (다음 서버 재시작 시 캐시 프리로드용)
+                    try {
+                        await execute(
+                            UPSERT_UUID_MAP,
+                            { email: email.toLowerCase(), uuid } as any,
+                            { autoCommit: true }
+                        );
+                    } catch (dbErr) {
+                        logger.warn(`[${requestId}] UUID DB 저장 실패 (${email}): ${dbErr}`);
+                    }
                 }
-            );
 
-            for (const u of response.data.value) {
-                cache.set(u.userPrincipalName.toLowerCase(), u.id);
-                resolved.push({ email: u.userPrincipalName, uuid: u.id });
+                logger.info(`[${requestId}] User Lookup 배치 ${i / LOOKUP_BATCH + 1} 완료 (${response.data.value.length}건 캐시+DB 저장)`);
+            } catch (err) {
+                logger.error(`[${requestId}] User Lookup 배치 ${i / LOOKUP_BATCH + 1} 실패: ${err}`);
             }
-
-            logger.info(`[${requestId}] Graph API User Lookup 완료 (${response.data.value.length}건 캐시 저장)`);
-        } catch (err) {
-            logger.error(`[${requestId}] User ID lookup failed: ${err}`);
         }
     }
 
