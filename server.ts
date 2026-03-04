@@ -322,6 +322,7 @@ app.get('/api/users/photo/:email', (req: Request, res: Response) => {
     if (!photo) {
         // 사진 없는 사람: 투명 1x1 픽셀 이미지를 200으로 반환
         // 204는 body가 없어 브라우저가 캐싱하지 않으므로, 대신 보이지 않는 이미지를 보냄
+        logger.info(`[${requestId}] Photo 응답: ${email} (사진 없음 → 1px 투명)`);
         res.set({
             'Content-Type': 'image/jpeg',
             'Cache-Control': 'public, max-age=43200'
