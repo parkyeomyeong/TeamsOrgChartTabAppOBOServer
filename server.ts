@@ -74,6 +74,9 @@ app.use((req, res, next) => {
     }
 
     res.on('finish', () => { //res.send(), res.json()이 호출되면 이 함수를 거쳐 clien에게 전송!
+        // 사진 요청은 로그 제외 (건수가 많고 추적할 비즈니스 로직 없음)
+        if (req.url.startsWith('/api/users/photo/')) return;
+
         // 2. 요청 종료 시간 및 소요 시간 계산
         const endTime = new Date();
         const endStr = getKST();
@@ -295,10 +298,16 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
 });
 
 
-// 유저 프로필 사진 조회 (GET)
-// 브라우저가 이미지를 12시간 로컬 캐싱하므로, 같은 사진을 반복 요청하지 않음
-// 프론트에서는 <img src="/api/users/photo/user@company.com"> 으로 사용
-// img 태그는 JSON을 (이미지로) 해석 하지못해서 바로 res.status().send()로 반환
+// 사진 없는 사용자용 투명 1x1 픽셀 JPEG (요청마다 생성하지 않고 미리 만들어둠)
+const TRANSPARENT_1PX = Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AKwA//9k=',
+    'base64'
+);
+
+// 유저 프로필 사진 조회 (GET) (인증 헤더를 포함하도록 해야할거 같은데 .. 흐음 ..)
+// - 브라우저가 이미지를 12시간 로컬 캐싱하므로, 같은 사진을 반복 요청하지 않음
+// - 프론트에서는 <img src="/api/users/photo/user@company.com"> 으로 사용
+// - img 태그는 JSON을 (이미지로) 해석 하지못해서 바로 res.status().send()로 반환
 app.get('/api/users/photo/:email', (req: Request, res: Response) => {
     const requestId = (req as any).requestId;
     const email = req.params.email as string;
@@ -311,8 +320,13 @@ app.get('/api/users/photo/:email', (req: Request, res: Response) => {
     const photo = getPhotoBuffer(email);
 
     if (!photo) {
-        // 204 No Content — 사진 없음 (404 대신 사용: img 태그에서 깨진 아이콘 방지)
-        return res.status(204).send();
+        // 사진 없는 사람: 투명 1x1 픽셀 이미지를 200으로 반환
+        // 204는 body가 없어 브라우저가 캐싱하지 않으므로, 대신 보이지 않는 이미지를 보냄
+        res.set({
+            'Content-Type': 'image/jpeg',
+            'Cache-Control': 'public, max-age=43200'
+        });
+        return res.status(200).send(TRANSPARENT_1PX);
     }
 
     logger.info(`[${requestId}] Photo 응답: ${email} (${(photo.byteLength / 1024).toFixed(1)}KB)`);
