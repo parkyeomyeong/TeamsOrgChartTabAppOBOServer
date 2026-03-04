@@ -1,6 +1,8 @@
 import cron from 'node-cron';
+import * as msal from '@azure/msal-node';
 import { execute, executeTransaction } from '../utils/db';
 import logger from '../utils/logger';
+import { refreshAllPhotos } from '../utils/photoCache';
 import {
     COUNT_SOURCE_USERS, COUNT_SOURCE_GROUPS,
     DELETE_CHART_GROUPS, INSERT_CHART_GROUPS,
@@ -44,12 +46,17 @@ const syncChartTables = async () => {
     }
 };
 
-// 매일 새벽 1시(KST)에 실행
-export const startBatchScheduler = () => {
-    cron.schedule('0 1 * * *', () => {
-        syncChartTables();
-    });
+// 일일 스케줄러 등록 (HR 동기화 + 사진 갱신)
+export const startBatchScheduler = (cca: msal.ConfidentialClientApplication) => {
+    // 매일 01:00 — HR 데이터 동기화
+    cron.schedule('0 1 * * *', () => syncChartTables());
     logger.batch('일일 배치 스케줄러 등록 완료 (매일 01:00 KST)');
+
+    // 매일 01:30 — 프로필 사진 갱신 (HR 배치 후)
+    cron.schedule('30 1 * * *', () => {
+        refreshAllPhotos(cca).catch((err: any) => logger.warn(`[Photo Refresh] 실패: ${err}`));
+    });
+    logger.batch('사진 갱신 스케줄러 등록 완료 (매일 01:30 KST)');
 };
 
 // 수동 실행용 (테스트 또는 긴급 동기화)
