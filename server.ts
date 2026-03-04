@@ -16,7 +16,7 @@ import { EmpData, OrgData } from './types/orgChart';
 import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
 import logger from './utils/logger';
 import { resolveEmailsToUuids, preloadUserUuids } from './utils/userIdCache';
-import { getPhotos, preloadPhotos } from './utils/photoCache';
+import { getPhotoBuffer, preloadPhotos } from './utils/photoCache';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -295,19 +295,35 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
 });
 
 
-// 유저 프로필 사진 조회 (POST)
-// Body: { emails: ["user@company.com", ...] }
-app.post('/api/users/photos', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+// 유저 프로필 사진 조회 (GET)
+// 브라우저가 이미지를 12시간 로컬 캐싱하므로, 같은 사진을 반복 요청하지 않음
+// 프론트에서는 <img src="/api/users/photo/user@company.com"> 으로 사용
+// img 태그는 JSON을 (이미지로) 해석 하지못해서 바로 res.status().send()로 반환
+app.get('/api/users/photo/:email', (req: Request, res: Response) => {
     const requestId = (req as any).requestId;
-    const { emails } = req.body;
+    const email = req.params.email as string;
 
-    if (!emails || !Array.isArray(emails) || emails.length === 0) {
-        return next({ status: 400, message: '유효하지 않은 이메일 목록입니다.' });
+    if (!email || !email.includes('@')) {
+        logger.warn(`[${requestId}] Photo 요청 실패: 유효하지 않은 이메일 (${email})`);
+        return res.status(400).send();
     }
 
-    logger.info(`[${requestId}] Photo Request: ${emails.length}명`);
-    const photos = getPhotos(emails);
-    res.json(photos);
+    const photo = getPhotoBuffer(email);
+
+    if (!photo) {
+        // 204 No Content — 사진 없음 (404 대신 사용: img 태그에서 깨진 아이콘 방지)
+        return res.status(204).send();
+    }
+
+    logger.info(`[${requestId}] Photo 응답: ${email} (${(photo.byteLength / 1024).toFixed(1)}KB)`);
+
+    // Cache-Control: 브라우저에게 12시간(43200초) 동안 이 이미지를 로컬에 캐싱하라고 지시
+    // → 같은 사진 재요청 시 서버에 안 오고 브라우저 캐시에서 바로 로드 (트래픽 절약)
+    res.set({
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=43200'
+    });
+    res.send(photo);
 });
 
 // ... (End of routes)
