@@ -128,6 +128,12 @@ export const bulkSaveToCache = (entries: { email: string; uuid: string }[]): voi
     }
 };
 
+/** 이메일로 UUID 조회 (캐시에서만, null이면 없음) */
+export const getUuidByEmail = (email: string): string | undefined => cache.get(email.toLowerCase());
+
+/** 캐시에 있는 전체 UUID 목록 반환 (사진 프리로드용) */
+export const getAllCachedUuids = (): string[] => [...cache.values()];
+
 // ── 캐시 통계 ──────────────────────────────────────────────────
 
 /**

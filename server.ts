@@ -16,6 +16,7 @@ import { EmpData, OrgData } from './types/orgChart';
 import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
 import logger from './utils/logger';
 import { resolveEmailsToUuids, preloadUserUuids } from './utils/userIdCache';
+import { getPhotos, preloadPhotos } from './utils/photoCache';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -293,6 +294,22 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
     }
 });
 
+
+// 유저 프로필 사진 조회 (POST)
+// Body: { emails: ["user@company.com", ...] }
+app.post('/api/users/photos', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+    const requestId = (req as any).requestId;
+    const { emails } = req.body;
+
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+        return next({ status: 400, message: '유효하지 않은 이메일 목록입니다.' });
+    }
+
+    logger.info(`[${requestId}] Photo Request: ${emails.length}명`);
+    const photos = getPhotos(emails);
+    res.json(photos);
+});
+
 // ... (End of routes)
 
 // 404 핸들러 (정의되지 않은 라우트 처리)
@@ -335,10 +352,12 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 
     try {
         await initDB(); // DB 연결 초기화
-        startBatchScheduler(); // 일일 배치 스케줄러 등록 (매일 01:00 KST)
+        startBatchScheduler(cca); // 일일 배치 스케줄러 등록 (HR 01:00 + 사진 01:30)
 
         // UUID 캐시 프리로드 (서버 시작을 지연시키지 않기 위해 비동기 실행)
-        preloadUserUuids(cca).catch((err: any) => logger.warn(`[UUID Preload] 비동기 프리로드 실패: ${err}`));
+        preloadUserUuids(cca)
+            .then(() => preloadPhotos(cca)) // UUID 완료 후 사진 프리로드
+            .catch((err: any) => logger.warn(`[초기화] 프리로드 실패: ${err}`));
 
         app.listen(port, () => {
             logger.info(`Server running at http://localhost:${port}`);
