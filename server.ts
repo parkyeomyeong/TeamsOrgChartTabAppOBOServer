@@ -146,7 +146,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunct
     };
 
     try {
-        const response = await cca.acquireTokenOnBehalfOf(oboRequest);
+        const response = await cca.acquireTokenOnBehalfOf(oboRequest); // 받아온 SSO token을 검증해주는 API (+ Access Key 발급도있음)
 
         if (!response || !response.accessToken) {
             return next({ status: 401, message: '유효하지 않은 토큰입니다.' });
@@ -376,6 +376,7 @@ app.use((err: any, req: Request, res: Response, next: any) => {
     // 3. 클라이언트 응답 (JSON 포맷)
     res.status(status).json({
         success: false,
+        status: status,
         requestId: requestId, // 클라이언트가 이 ID로 문의하면 로그 찾기 쉬움
         message: status === 500 ? '서버 내부 오류가 발생했습니다.' : err.message
     });
