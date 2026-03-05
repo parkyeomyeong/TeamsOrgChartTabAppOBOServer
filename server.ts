@@ -133,8 +133,7 @@ app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunct
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
-        // [수정] 401 에러도 Global Handler로 위임
-        return next({ status: 401, message: '인증 헤더가 없습니다.' });
+        return next({ status: 403, message: '인증 헤더가 없습니다.' });
     }
 
     const ssoToken = authHeader.split(' ')[1];
@@ -212,7 +211,7 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
     const { ids } = req.body;
 
     if (!authHeader) {
-        return next({ status: 401, message: '인증 헤더가 없습니다.' });
+        return next({ status: 403, message: '인증 헤더가 없습니다.' });
     }
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -292,7 +291,11 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
         res.json(allResults);
 
     } catch (error: any) {
-        // [수정] 모든 에러 처리를 Global Handler로 위임
+        // OBO 실패 시 invalid_grant는 SSO 토큰 문제 (exp 체크를 통과했지만 짧은 시간 내 만료된 경우)
+        if (error?.errorCode === 'invalid_grant') {
+            logger.warn(`[${requestId}] OBO invalid_grant → 401 반환`);
+            return next({ status: 401, message: 'SSO 토큰이 만료되었습니다. 재인증이 필요합니다.' });
+        }
         next(error);
     }
 });
