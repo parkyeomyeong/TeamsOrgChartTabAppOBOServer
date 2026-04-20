@@ -10,7 +10,7 @@ import dotenv from 'dotenv';
 import https from 'https';
 
 import { jwtDecode } from 'jwt-decode';
-import { initDB, execute } from './utils/db';
+import { initDB, execute, pingDB } from './utils/db';
 import { GET_ORG_CHART_EMPLOYEES, GET_ORG_CHART_DEPARTMENTS } from './queries/orgChart';
 import { EmpData, OrgData } from './types/orgChart';
 import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
@@ -111,9 +111,21 @@ const msalConfig: msal.Configuration = {
 // ConfidentialClientApplication 인스턴스 생성 (서버 사이드 앱용)
 const cca = new msal.ConfidentialClientApplication(msalConfig);
 
-// health check
+// health check (DB 상태 포함 — DB가 죽어도 health check 자체는 항상 200 반환)
 app.get('/api/healthcheck', async (req: Request, res: Response) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    let dbStatus = 'unknown';
+    try {
+        const isAlive = await pingDB();
+        dbStatus = isAlive ? 'connected' : 'disconnected';
+    } catch {
+        dbStatus = 'error';
+    }
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        db: dbStatus
+    });
 });
 
 // 수동 배치 실행 (SSO 없이 즉시 동기화)
