@@ -17,6 +17,10 @@ import { startBatchScheduler, syncChartTables } from './batch/syncChartData';
 import logger from './utils/logger';
 import { resolveEmailsToUuids, preloadUserUuids } from './utils/userIdCache';
 import { getPhotoBuffer, preloadPhotos } from './utils/photoCache';
+import { createFavoritesRouter } from './routes/favorites';
+import { createAuthMiddleware, AuthenticatedRequest } from './utils/auth';
+import { empList } from './data/empDummyData';
+import { orgList } from './data/orgDummyData';
 
 // 환경 변수 설정 로드
 dotenv.config();
@@ -111,6 +115,9 @@ const msalConfig: msal.Configuration = {
 // ConfidentialClientApplication 인스턴스 생성 (서버 사이드 앱용)
 const cca = new msal.ConfidentialClientApplication(msalConfig);
 
+// 공통 SSO 인증 미들웨어 초기화
+const authenticate = createAuthMiddleware(cca);
+
 // health check (DB 상태 포함 — DB가 죽어도 health check 자체는 항상 200 반환)
 app.get('/api/healthcheck', async (req: Request, res: Response) => {
     let dbStatus = 'unknown';
@@ -140,28 +147,16 @@ app.get('/api/batch/sync', async (req: Request, res: Response) => {
 
 
 // 조직도 데이터를 가져오는 엔드포인트 (SSO 인증 필요)
-app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+app.get('/api/orgChartData', authenticate, async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     const requestId = (req as any).requestId;
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-        return next({ status: 403, message: '인증 헤더가 없습니다.' });
-    }
-
-    const ssoToken = authHeader.split(' ')[1];
-
-    // OBO 요청을 통해 유효한 토큰인지 검증 (Microsoft Graph 호출을 통해 검증)
-    // 실제로는 토큰 자체의 서명만 검증해도 되지만, 여기서는 OBO 흐름을 타서 유효성을 확실히 체크함.
-    const oboRequest: msal.OnBehalfOfRequest = {
-        oboAssertion: ssoToken,
-        scopes: ["User.Read"],
-    };
 
     try {
-        const response = await cca.acquireTokenOnBehalfOf(oboRequest); // 받아온 SSO token을 검증해주는 API (+ Access Key 발급도있음)
-
-        if (!response || !response.accessToken) {
-            return next({ status: 401, message: '유효하지 않은 토큰입니다.' });
+        if (process.env.USE_MOCK_DB === 'true') {
+            logger.info(`[${requestId}] Mock DB 모드 활성화 - 로컬 더미 데이터 반환`);
+            return res.json({
+                orgList: orgList,
+                empList: empList
+            });
         }
 
         // * 검증 이후 조직도 데이터 가져오기 *
@@ -215,37 +210,28 @@ app.get('/api/orgChartData', async (req: Request, res: Response, next: NextFunct
 // flow설명 2. email로 받은거는 uuid로 변환
 // flow설명 3. uuid로 presence 조회
 // flow설명 4. 결과를 email로 매칭한 객체로 반환
-// flow설명 4. 결과를 email로 매칭한 객체로 반환
-app.post('/api/users/presence', async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+app.post('/api/users/presence', authenticate, async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     const requestId = (req as any).requestId;
     logger.info(`[${requestId}] Presence Batch Request Started.`);
-    const authHeader = req.headers.authorization;
     const { ids } = req.body;
-
-    if (!authHeader) {
-        return next({ status: 403, message: '인증 헤더가 없습니다.' });
-    }
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
         return next({ status: 400, message: '유효하지 않은 ID 목록입니다.' });
     }
 
-    const ssoToken = authHeader.split(' ')[1];
-
-    // 필요한 권한은 Presence 읽기와 유저 ID 조회를 위한 User.Read.All
-    const oboRequest: msal.OnBehalfOfRequest = {
-        oboAssertion: ssoToken,
-        scopes: ["Presence.Read.All", "User.Read.All"],
-    };
-
     try {
-        logger.info(`[${requestId}] Presence OBO Token 요청...`);
-        const response = await cca.acquireTokenOnBehalfOf(oboRequest); // AccessToken 획득
-        logger.info(`[${requestId}] Presence OBO Token 획득 성공.`);
-        if (!response || !response.accessToken) {
-            return next({ status: 401, message: '유효하지 않은 토큰입니다.' });
+        const accessToken = req.accessToken!;
+
+        // ── [로컬 Mock 스위치] 만약 mock-access-token 이거나 Mock 환경인 경우 가상 Presence 반환 ──
+        if (process.env.USE_MOCK_DB === 'true' || accessToken === 'mock-access-token') {
+            logger.info(`[${requestId}][Presence] Mock DB 모드 활성화 - 모의 접속 상태(Available) 반환`);
+            const mockPresenceList = ids.map(id => ({
+                email: id,
+                availability: 'Available',
+                activity: 'Available'
+            }));
+            return res.json(mockPresenceList);
         }
-        const accessToken = response.accessToken;
 
         const BATCH_SIZE = 15;
         const allResults: any[] = [];
@@ -311,6 +297,9 @@ app.post('/api/users/presence', async (req: Request, res: Response, next: NextFu
         next(error);
     }
 });
+
+// 즐겨찾기 CRUD API 등록
+app.use('/api/favorites', createFavoritesRouter(cca));
 
 
 // 사진 없는 사용자용 투명 1x1 픽셀 JPEG (요청마다 생성하지 않고 미리 만들어둠)
@@ -396,15 +385,20 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 
 // 서버 시작
 (async () => {
+    const isMock = process.env.USE_MOCK_DB === 'true';
 
     try {
-        await initDB(); // DB 연결 초기화
-        startBatchScheduler(cca); // 일일 배치 스케줄러 등록 (HR 01:00 + 사진 01:30)
+        if (!isMock) {
+            await initDB(); // DB 연결 초기화
+            startBatchScheduler(cca); // 일일 배치 스케줄러 등록 (HR 01:00 + 사진 01:30)
 
-        // UUID 캐시 프리로드 (서버 시작을 지연시키지 않기 위해 비동기 실행)
-        preloadUserUuids(cca)
-            .then(() => preloadPhotos(cca)) // UUID 완료 후 사진 프리로드
-            .catch((err: any) => logger.warn(`[초기화] 프리로드 실패: ${err}`));
+            // UUID 캐시 프리로드 (서버 시작을 지연시키지 않기 위해 비동기 실행)
+            preloadUserUuids(cca)
+                .then(() => preloadPhotos(cca)) // UUID 완료 후 사진 프리로드
+                .catch((err: any) => logger.warn(`[초기화] 프리로드 실패: ${err}`));
+        } else {
+            logger.info('[초기화] 로컬 Mock DB 모드가 활성화되어 DB 연결 및 캐시 프리로드를 생략합니다.');
+        }
 
         app.listen(port, () => {
             logger.info(`Server running at http://localhost:${port}`);
