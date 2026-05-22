@@ -19,9 +19,6 @@ import { resolveEmailsToUuids, preloadUserUuids } from './utils/userIdCache';
 import { getPhotoBuffer, preloadPhotos } from './utils/photoCache';
 import { createFavoritesRouter } from './routes/favorites';
 import { createAuthMiddleware, AuthenticatedRequest } from './utils/auth';
-import { empList } from './data/empDummyData';
-import { orgList } from './data/orgDummyData';
-
 // 환경 변수 설정 로드
 dotenv.config();
 
@@ -151,11 +148,29 @@ app.get('/api/orgChartData', authenticate, async (req: AuthenticatedRequest, res
     const requestId = (req as any).requestId;
 
     try {
+        // [로컬 가상 데이터 스위칭 분기] 
+        // USE_MOCK_DB 환경 변수가 켜져 있을 때만 가상 더미 데이터 처리를 동적으로 수행합니다.
         if (process.env.USE_MOCK_DB === 'true') {
             logger.info(`[${requestId}] Mock DB 모드 활성화 - 로컬 더미 데이터 반환`);
+            
+            let localEmpList: any[] = [];
+            let localOrgList: any[] = [];
+            
+            try {
+                // [배포 안정성 개선 핵심]: 대용량 tsx/ts 더미 데이터 파일은 .gitignore에 제외되어 있어 운영서버에 업로드되지 않습니다.
+                // 빌드(tsc) 시 컴파일러 오류를 우회하고 운영 환경 실행 안정성을 확보하기 위해 static import 대신 런타임 동적 require를 적용했습니다.
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                localEmpList = require('./data/empDummyData').empList;
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                localOrgList = require('./data/orgDummyData').orgList;
+            } catch (err) {
+                // 운영 배포 단계나 실수로 로컬에 더미 데이터 파일이 누락되어 있어도 크래시가 나지 않도록 경고 로그 후 안전 우회
+                logger.warn(`[${requestId}][MockDB] 더미 데이터 로드 실패 (파일 누락): ${err}`);
+            }
+            
             return res.json({
-                orgList: orgList,
-                empList: empList
+                orgList: localOrgList,
+                empList: localEmpList
             });
         }
 
