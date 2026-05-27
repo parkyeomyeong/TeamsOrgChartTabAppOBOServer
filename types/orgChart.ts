@@ -22,7 +22,8 @@ export interface EmpData {
     // mobile: string;
     // email: string;
     // description: string;
-    id: string; // 고유 ID (User Principal Name 또는 GUID) - 프론트엔드용 매핑
+    id: string;           // UI 전용 stable key (email-orgId 조합) - 프론트엔드용
+    empId: string | null; // DB 사번 (EMPLOYEENUMBER) - DB 저장 전용. 없으면 null.
     name: string; // 이름
     position: string; // 직위 (e.g. 과장, 대리)
     role: string; // 직책 (e.g. 팀장)
