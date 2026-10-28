@@ -9,10 +9,18 @@ import { getUuidByEmail, getAllCachedUuids } from './userIdCache';
 // 프로필 사진 캐시 (인메모리 Buffer + 파일시스템)
 // L1: Map<uuid, Buffer> — 런타임 서빙 (GET /api/users/photo/:email)
 // L2: photos/{uuid}.jpg — 서버 재시작 복구용
+//
+// - preloadPhotos   : 서버 시작 시. 파일에서 복원 + 파일이 없는 uuid만 다운로드
+// - refreshAllPhotos: 일일 배치(01:30). 파일 유무와 무관하게 전원 재다운로드
+//                     (성공 → 덮어쓰기, 404 → 삭제, 그 외 실패 → 기존 유지)
 // ================================================================
 
 const PHOTOS_DIR = path.join(__dirname, '..', 'photos');
 const cache = new Map<string, Buffer>(); // uuid → jpeg buffer
+
+const GRAPH_SCOPES = ['https://graph.microsoft.com/.default'];
+const photoUrl = (uuid: string) => `https://graph.microsoft.com/v1.0/users/${uuid}/photos/96x96/$value`;
+const photoPath = (uuid: string) => path.join(PHOTOS_DIR, `${uuid}.jpg`);
 
 // ── 조회 ────────────────────────────────────────────────────────
 
@@ -30,6 +38,49 @@ const getMemoryBytes = (): number => {
     return bytes;
 };
 const formatMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
+
+// ── 공통: Graph 사진 다운로드 ───────────────────────────────────
+
+type DownloadResult =
+    | { status: 'ok'; buf: Buffer }
+    | { status: 'notfound' }          // 404 — 사진 없음(삭제됨)
+    | { status: 'ratelimited'; wait: number } // 429 — Retry-After 초
+    | { status: 'error'; message: string };
+
+const downloadPhoto = async (uuid: string, accessToken: string): Promise<DownloadResult> => {
+    try {
+        const res = await axios.get(photoUrl(uuid), {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            responseType: 'arraybuffer',
+            timeout: 5000
+        });
+        return { status: 'ok', buf: Buffer.from(res.data) };
+    } catch (err: any) {
+        if (err.response?.status === 404) return { status: 'notfound' };
+        if (err.response?.status === 429) {
+            const wait = parseInt(err.response.headers['retry-after'] || '10', 10);
+            return { status: 'ratelimited', wait };
+        }
+        return { status: 'error', message: err.message };
+    }
+};
+
+const savePhoto = (uuid: string, buf: Buffer) => {
+    cache.set(uuid, buf);
+    fs.writeFileSync(photoPath(uuid), buf);
+};
+
+const removePhoto = (uuid: string) => {
+    cache.delete(uuid);
+    fs.rmSync(photoPath(uuid), { force: true });
+};
+
+const sleep = (sec: number) => new Promise(r => setTimeout(r, sec * 1000));
+
+const acquireAppToken = async (cca: msal.ConfidentialClientApplication): Promise<string | null> => {
+    const tokenRes = await cca.acquireTokenByClientCredential({ scopes: GRAPH_SCOPES });
+    return tokenRes?.accessToken || null;
+};
 
 // ── 프리로드 (서버 시작 시) ─────────────────────────────────────
 
@@ -56,10 +107,8 @@ export const preloadPhotos = async (cca: msal.ConfidentialClientApplication): Pr
         }
 
         // 3. Client Credentials 토큰 획득
-        const tokenRes = await cca.acquireTokenByClientCredential({
-            scopes: ['https://graph.microsoft.com/.default']
-        });
-        if (!tokenRes?.accessToken) {
+        const accessToken = await acquireAppToken(cca);
+        if (!accessToken) {
             logger.warn('[Photo Preload] 토큰 획득 실패. 스킵.');
             return;
         }
@@ -67,30 +116,18 @@ export const preloadPhotos = async (cca: msal.ConfidentialClientApplication): Pr
         // 4. 신규 사진 다운로드 (1건씩)
         let loaded = 0;
         for (const uuid of missing) {
-            try {
-                const res = await axios.get(
-                    `https://graph.microsoft.com/v1.0/users/${uuid}/photos/96x96/$value`,
-                    {
-                        headers: { Authorization: `Bearer ${tokenRes.accessToken}` },
-                        responseType: 'arraybuffer',
-                        timeout: 5000
-                    }
-                );
-                const buf = Buffer.from(res.data);
-                cache.set(uuid, buf);
-                fs.writeFileSync(path.join(PHOTOS_DIR, `${uuid}.jpg`), buf);
+            const r = await downloadPhoto(uuid, accessToken);
+            if (r.status === 'ok') {
+                savePhoto(uuid, r.buf);
                 loaded++;
-            } catch (err: any) {
-                if (err.response?.status === 404) continue;
-                if (err.response?.status === 429) {
-                    const wait = parseInt(err.response.headers['retry-after'] || '10', 10);
-                    logger.warn(`[Photo Preload] Rate limited. ${wait}초 대기...`);
-                    await new Promise(r => setTimeout(r, wait * 1000));
-                    missing.push(uuid);
-                } else {
-                    logger.warn(`[Photo Preload] ${uuid} 실패: ${err.message}`);
-                }
+            } else if (r.status === 'ratelimited') {
+                logger.warn(`[Photo Preload] Rate limited. ${r.wait}초 대기...`);
+                await sleep(r.wait);
+                missing.push(uuid);
+            } else if (r.status === 'error') {
+                logger.warn(`[Photo Preload] ${uuid} 실패: ${r.message}`);
             }
+            // notfound → 사진 없는 직원. 스킵.
         }
 
         logger.info(`[Photo Preload] 완료: 신규 ${loaded}건. 총 ${cache.size}건, 메모리: ${formatMB(getMemoryBytes())}MB`);
@@ -99,11 +136,49 @@ export const preloadPhotos = async (cca: msal.ConfidentialClientApplication): Pr
     }
 };
 
-// ── 배치 갱신 ───────────────────────────────────────────────────
+// ── 배치 갱신 (매일 01:30) ──────────────────────────────────────
+// 파일 유무와 관계없이 전원 재다운로드.
+// 메모리를 미리 비우지 않으므로 다운로드 실패 시에도 기존 사진이 그대로 서빙됨.
 
 export const refreshAllPhotos = async (cca: msal.ConfidentialClientApplication): Promise<void> => {
-    logger.info('[Photo Refresh] 전체 사진 갱신 시작...');
-    cache.clear();
-    await preloadPhotos(cca);
-    logger.info('[Photo Refresh] 전체 사진 갱신 완료.');
+    try {
+        if (!fs.existsSync(PHOTOS_DIR)) fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+
+        const uuids = [...getAllCachedUuids()];
+        logger.info(`[Photo Refresh] 전체 사진 갱신 시작: 대상 ${uuids.length}건 (현재 캐시 ${cache.size}건)`);
+
+        const accessToken = await acquireAppToken(cca);
+        if (!accessToken) {
+            logger.warn('[Photo Refresh] 토큰 획득 실패. 기존 사진 유지.');
+            return;
+        }
+
+        let updated = 0, removed = 0, failed = 0;
+        for (const uuid of uuids) {
+            const r = await downloadPhoto(uuid, accessToken);
+            if (r.status === 'ok') {
+                savePhoto(uuid, r.buf);
+                updated++;
+            } else if (r.status === 'notfound') {
+                // Graph에 사진이 없음 → 삭제한 사람. 옛 사진도 제거.
+                if (cache.has(uuid)) removed++;
+                removePhoto(uuid);
+            } else if (r.status === 'ratelimited') {
+                logger.warn(`[Photo Refresh] Rate limited. ${r.wait}초 대기...`);
+                await sleep(r.wait);
+                uuids.push(uuid);
+            } else {
+                // 네트워크 오류·타임아웃 등 → 기존 사진 유지
+                logger.warn(`[Photo Refresh] ${uuid} 실패 (기존 유지): ${r.message}`);
+                failed++;
+            }
+        }
+
+        logger.info(
+            `[Photo Refresh] 전체 사진 갱신 완료: 갱신 ${updated}건, 삭제 ${removed}건, 실패 ${failed}건. ` +
+            `총 ${cache.size}건, 메모리: ${formatMB(getMemoryBytes())}MB`
+        );
+    } catch (err) {
+        logger.warn(`[Photo Refresh] 갱신 실패 (기존 사진 유지): ${err}`);
+    }
 };

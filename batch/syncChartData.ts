@@ -3,6 +3,7 @@ import * as msal from '@azure/msal-node';
 import { execute, executeTransaction } from '../utils/db';
 import logger from '../utils/logger';
 import { refreshAllPhotos } from '../utils/photoCache';
+import { preloadUserUuids } from '../utils/userIdCache';
 import {
     COUNT_SOURCE_USERS, COUNT_SOURCE_GROUPS,
     DELETE_CHART_GROUPS, INSERT_CHART_GROUPS,
@@ -53,8 +54,13 @@ export const startBatchScheduler = (cca: msal.ConfidentialClientApplication) => 
     logger.batch('일일 배치 스케줄러 등록 완료 (매일 01:00 KST)');
 
     // 매일 01:30 — 프로필 사진 갱신 (HR 배치 후)
+    // 1) UUID 캐시 재갱신: 01:00 HR 배치로 들어온 신규 입사자 이메일 → UUID 매핑 추가
+    //    (DB에 없는 이메일만 Graph 조회하므로 추가 호출은 신규 인원 수만큼만 발생)
+    // 2) 전체 사진 재다운로드: 파일 유무와 무관하게 전원 갱신 (변경·삭제 반영)
     cron.schedule('30 1 * * *', () => {
-        refreshAllPhotos(cca).catch((err: any) => logger.warn(`[Photo Refresh] 실패: ${err}`));
+        preloadUserUuids(cca)
+            .then(() => refreshAllPhotos(cca))
+            .catch((err: any) => logger.warn(`[Photo Refresh] 실패: ${err}`));
     });
     logger.batch('사진 갱신 스케줄러 등록 완료 (매일 01:30 KST)');
 };
